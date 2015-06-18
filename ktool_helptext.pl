@@ -31,15 +31,23 @@ use Getopt::Std;
 my $supress_error_output = 0;      # flag to prevent warning and error text
 my $debug_ktool          = 0;      # flag to print additional ktool debug output
 my $print_full_output    = 0;      # flag to print wholeconfig output
+my $print_helptext       = 0;      # flag to print just helptext
+my $xml_helptext         = 0;      # flag to add docbook xml to helptext doc
 my $output_file          = "-";    # filename of output - set stdout by default
+my $header_file          = "";     # file containing text to prepend to output
+my $footer_file          = "";     # file containing text to append to output
+my $flags_file           = "";     # file to load helptext flags from
 
 #globals
 my $root_dir     = "src";
 my $errors_found = 0;              # count of warnings and errors
+my $help_indent  = "";             # indentation whitespace for helptext line output
 my @wholeconfig;                   # document the entire kconfig structure
+my @helptext;                      # document selectable help
 my %loaded_files;                  # list of each Kconfig file loaded
 my %symbols;                       # main structure of all symbols declared
 my %referenced_symbols;            # list of symbols referenced by expressions or select statements
+my %symbol_flags;                  # structure of symbols and their flags for helptext
 
 Main();
 
@@ -55,6 +63,11 @@ sub Main {
     check_arguments();
     open( STDOUT, "> $output_file" ) or die "Can't open $output_file for output: $!\n";
 
+    load_symbol_flags($flags_file);
+
+    #add text to the beginning of the output
+    print_file($header_file);
+
     #load the Kconfig tree, checking what we can and building up all the hash tables
     build_and_parse_kconfig_tree();
 
@@ -65,8 +78,56 @@ sub Main {
     check_used_symbols();
 
     print_wholeconfig();
+    print @helptext if $print_helptext;
 
+    #add text to the end of the output
+    print_file($footer_file);
     exit($errors_found);
+}
+
+#-------------------------------------------------------------------------------
+# load a list of symbols and their flags for helptext.
+# Each symbol and ONE flag should be one symbol on a single line.  If a symbol
+# has more than one flag, list each flag on a separate line.
+# do NOT start the symbol with CONFIG_
+# Blank lines and lines that begin with '#' are ignored.
+# currently recognized symbols are:
+#  "EXCLUDE" to skip printing the symbol
+#  "USE_HELP_FORMATTING" to use the linefeeds as in the Kconfig file
+#-------------------------------------------------------------------------------
+sub load_symbol_flags() {
+    my ($file) = @_;
+
+    if ($file) {
+        open( my $HANDLE, "<", "$file" ) or die "Error: could not open file '$file'\n";
+        while ( my $data = <$HANDLE> ) {
+            chomp $data;
+
+            #skip comments
+            if ( $data =~ /\s*#.*/ ) {
+                next;
+            }
+            elsif ( $data =~ /\s*(\S*)\s+(\S*)\s*$/ ) {
+                $symbol_flags{$1}{$2} = 1;
+            }
+
+        }
+        close $HANDLE;
+    }
+}
+
+#-------------------------------------------------------------------------------
+# load a file and print the contents.
+#-------------------------------------------------------------------------------
+sub print_file() {
+    my ($file) = @_;
+
+    if ($file) {
+        open( my $HANDLE, "<", "$file" ) or die "Error: could not open file '$file'\n";
+        my @data = <$HANDLE>;
+        close $HANDLE;
+        print @data;
+    }
 }
 
 #-------------------------------------------------------------------------------
@@ -95,7 +156,8 @@ sub check_defaults {
                     my $filename = $symbols{$sym}{$sym_num}{file};
                     my $line_no  = $symbols{$sym}{$sym_num}{default}{$def_num}{default_line_no};
                     unless ($supress_error_output) {
-                        print "#!!!!! Error: Default for '$sym' referenced in $filename at line $line_no will never be set - overridden by default set in $default_filename at line $default_line_no \n";
+                        print
+                          "#!!!!! Error: Default for '$sym' referenced in $filename at line $line_no will never be set - overridden by default set in $default_filename at line $default_line_no \n";
                     }
                     $errors_found++;
                 }
@@ -186,11 +248,12 @@ sub build_and_parse_kconfig_tree {
     my @config_to_parse = load_kconfig_file( "$root_dir/Kconfig", "", 0, 0 );
     my @parseline;
     my $inside_help   = 0;     # set to line number of 'help' keyword if this line is inside a help block
-    my @inside_if     = ();    # stack of if dependencies
+    my @inside_if     = ();
     my $inside_config = "";    # set to symbol name of the config section
     my @inside_menu   = ();    # stack of menu names
     my $inside_choice = "";
     my $configs_inside_choice;
+    my $help_menu_line = 0;
 
     while ( ( @parseline = shift(@config_to_parse) ) && ( exists $parseline[0]{text} ) ) {
         my $line     = $parseline[0]{text};
@@ -224,7 +287,7 @@ sub build_and_parse_kconfig_tree {
             if ($inside_choice) {
                 $configs_inside_choice++;
             }
-            add_symbol( $symbol, \@inside_menu, $filename, $line_no, \@inside_if );
+            add_symbol( $symbol, $filename, $line_no, \@inside_if );
         }
 
         #bool|hex|int|string|tristate <expr> [if <expr>]
@@ -232,7 +295,7 @@ sub build_and_parse_kconfig_tree {
             $line =~ /^\s*(bool|string|hex|int|tristate)\s*(.*)/;
             my ( $type, $prompt ) = ( $1, $2 );
             handle_type( $type, $inside_config, $filename, $line_no );
-            handle_prompt( $prompt, $type, \@inside_menu, $inside_config, $inside_choice, $filename, $line_no );
+            handle_prompt( $prompt, $type, $inside_config, $inside_choice, $filename, $line_no );
         }
 
         # def_bool|def_tristate <expr> [if <expr>]
@@ -247,7 +310,7 @@ sub build_and_parse_kconfig_tree {
         #prompt <prompt> [if <expr>]
         elsif ( $line =~ /^\s*prompt/ ) {
             $line =~ /^\s*prompt\s+(.+)/;
-            handle_prompt( $1, "prompt", \@inside_menu, $inside_config, $inside_choice, $filename, $line_no );
+            handle_prompt( $1, "prompt", $inside_config, $inside_choice, $filename, $line_no );
         }
 
         # default <expr> [if <expr>]
@@ -274,7 +337,7 @@ sub build_and_parse_kconfig_tree {
         elsif ( $line =~ /^\s*choice/ ) {
             if ( $line =~ /^\s*choice\s*([A-Za-z0-9_]+)$/ ) {
                 my $symbol = $1;
-                add_symbol( $symbol, \@inside_menu, $filename, $line_no, \@inside_if );
+                add_symbol( $symbol, $filename, $line_no, \@inside_if );
                 handle_type( "bool", $symbol, $filename, $line_no );
             }
             $inside_config         = "";
@@ -334,6 +397,18 @@ sub build_and_parse_kconfig_tree {
             $inside_config = "";
             $inside_choice = "";
             push( @inside_menu, $menu );
+
+            # add the menu entry to the helptext file
+            push @helptext, "\n" if ( @helptext && ( $helptext[ @helptext - 1 ] !~ /^\s*$/ ) );
+            if ($xml_helptext) {
+                push( @helptext, "${help_indent}<section><title>$menu Menu</title>\n" );
+            }
+            else {
+                push( @helptext, "${help_indent}##### $menu #####\n" );
+            }
+            $help_indent    = "$help_indent    ";
+            $help_menu_line = @helptext;
+
         }
 
         # endmenu
@@ -341,6 +416,17 @@ sub build_and_parse_kconfig_tree {
             $inside_config = "";
             $inside_choice = "";
             pop @inside_menu;
+            $help_indent =~ /^    (\s*)/;    #remove four spaces from the indent
+            $help_indent = $1;
+
+            #get rid of empty menus in the help text
+            if ( $help_menu_line == @helptext ) {
+                pop @helptext;
+            }
+            else {
+                push( @helptext, "</section>\n" ) if ($xml_helptext);
+            }
+
         }
 
         # "if" <expr>
@@ -431,7 +517,7 @@ sub handle_depends {
 #-------------------------------------------------------------------------------
 #-------------------------------------------------------------------------------
 sub add_symbol {
-    my ( $symbol, $menu_array_ref, $filename, $line_no, $ifref ) = @_;
+    my ( $symbol, $filename, $line_no, $ifref ) = @_;
     my @inside_if = @{$ifref};
 
     if ( !exists $symbols{$symbol} ) {
@@ -443,10 +529,6 @@ sub add_symbol {
     my $symcount = $symbols{$symbol}{count};
     $symbols{$symbol}{$symcount}{file}    = $filename;
     $symbols{$symbol}{$symcount}{line_no} = $line_no;
-
-    if ( defined @$menu_array_ref[0] ) {
-        $symbols{$symbol}{$symcount}{menu} = $menu_array_ref;
-    }
 
     if (@inside_if) {
         my $dep_num = 0;
@@ -582,10 +664,10 @@ sub handle_expressions {
     return unless ($exprline);
 
     #filter constant symbols first
-    if ( $exprline =~ /^\s*"?([yn])"?\s*$/ ) {                           # constant y/n
+    if ( $exprline =~ /^\s*"?([yn])"?\s*$/ ) {    # constant y/n
         return;
     }
-    elsif ( $exprline =~ /^\s*"?((?:-)\d+)"?\s*$/ ) {                    # int values
+    elsif ( $exprline =~ /^\s*"?((?:-)\d+)"?\s*$/ ) {    # int values
         return;
     }
     elsif ( $exprline =~ /^\s*"?((?:-)?(?:0x)?\p{XDigit})+"?\s*$/ ) {    # hex values
@@ -681,12 +763,59 @@ sub add_referenced_symbol {
             if ( ( $line !~ /$help_whitespace/ ) && ( $line !~ /^[\r\n]+/ ) ) {
                 $inside_help     = 0;
                 $help_whitespace = "";
+                if ($xml_helptext) {
+
+                    #get rid of empty final lines
+                    pop @helptext if ( $helptext[ @helptext - 1 ] =~ /^\s*<\?linebreak\?>\s*$/ );
+
+                    #xml needs a close tag
+                    if ($inside_config) {
+                        my $sym_num = $symbols{$inside_config}{count};
+                        if (   ( exists $symbols{$inside_config}{$sym_num}{prompt} )
+                            && ( !exists $symbol_flags{$inside_config}{EXCLUDE} ) )
+                        {
+                            push( @helptext, "${help_indent}</para> </section>\n" ) if ($xml_helptext);
+                        }
+                    }
+                }
+                else {
+                    pop @helptext if ( $helptext[ @helptext - 1 ] =~ /^\s*$/ );
+                }
+
+                # don't print a symbol twice.
+                $symbol_flags{$inside_config}{EXCLUDE} = 1 if ($inside_config);
             }
             else {    #if it's not ended, add the line to the helptext array for the symbol's instance
                 if ($inside_config) {
                     my $sym_num = $symbols{$inside_config}{count};
                     if ($help_whitespace) { $line =~ s/^$help_whitespace//; }
                     push( @{ $symbols{$inside_config}{$sym_num}{helptext} }, $line );
+                    if (   ( exists $symbols{$inside_config}{$sym_num}{prompt} )
+                        && ( !exists $symbol_flags{$inside_config}{EXCLUDE} ) )
+                    {
+
+                        #xml needs ampersands replaced with &amp;
+                        if ($xml_helptext) {
+                            $line =~ s/&/&amp;/g;
+                        }
+
+                        if ( $line =~ /^\s*$/ ) {
+                            if ($xml_helptext) {
+                                push @helptext, "${help_indent}<?linebreak?>\n" if ( @helptext && ( $helptext[ @helptext - 1 ] !~ /^\s*$/ ) );
+                            }
+                            else {
+                                push @helptext, "\n" if ( @helptext && ( $helptext[ @helptext - 1 ] !~ /^\s*$/ ) );
+                            }
+                        }
+                        else {
+                            push( @helptext, "${help_indent}    $line" );
+
+                            if ( ($xml_helptext) && ( exists $symbol_flags{$inside_config}{USE_HELP_FORMATTING} ) ) {
+                                push @helptext, "${help_indent}        <?linebreak?>\n";
+                            }
+
+                        }
+                    }
                 }
             }
         }
@@ -703,6 +832,26 @@ sub add_referenced_symbol {
                 my $sym_num = $symbols{$inside_config}{count};
                 $symbols{$inside_config}{$sym_num}{help_line_no} = $line_no;
                 $symbols{$inside_config}{$sym_num}{helptext}     = ();
+                if (   ( exists $symbols{$inside_config}{$sym_num}{prompt} )
+                    && ( !exists $symbol_flags{$inside_config}{EXCLUDE} ) )
+                {
+                    my $prompt = $symbols{$inside_config}{$sym_num}{prompt}{0}{prompt};
+                    if ($xml_helptext) {
+                        $prompt =~ s/&/&amp;/;
+
+                        push @helptext, "\n" if ( @helptext && ( $helptext[ @helptext - 1 ] !~ /^\s*$/ ) );
+                        push @helptext, "${help_indent}<section><title>$inside_config</title>\n";
+                        push @helptext, "${help_indent}<para><emphasis role=\"bold\">Prompt: </emphasis>$prompt</para>\n${help_indent}<para>\n";
+
+                    }
+                    else {
+                        push @helptext, "\n" if ( @helptext && ( $helptext[ @helptext - 1 ] !~ /^\s*$/ ) );
+                        push @helptext, "${help_indent}$inside_config\n";
+                        push @helptext, "${help_indent}  Prompt: $prompt\n";
+                    }
+
+                }
+
             }
         }
         return $inside_help;
@@ -746,7 +895,7 @@ sub handle_type {
 # handle_prompt
 #-------------------------------------------------------------------------------
 sub handle_prompt {
-    my ( $prompt, $name, $menu_array_ref, $inside_config, $inside_choice, $filename, $line_no ) = @_;
+    my ( $prompt, $name, $inside_config, $inside_choice, $filename, $line_no ) = @_;
 
     my $expression;
     ( $prompt, $expression ) = handle_if_line( $prompt, $inside_config, $filename, $line_no );
@@ -755,13 +904,6 @@ sub handle_prompt {
         if ( $prompt !~ /^\s*$/ ) {
             if ( $prompt =~ /^\s*"([^"]*)"\s*$/ ) {
                 $prompt = $1;
-            }
-
-            if ( !defined @$menu_array_ref[0] ) {
-                unless ($supress_error_output) {
-                    print "#!!!!! Warning: Symbol  '$inside_config' with prompt '$prompt' appears outside of a menu in $filename at line $line_no.  This is discouraged.\n";
-                }
-                $errors_found++;
             }
 
             my $sym_num = $symbols{$inside_config}{count};
@@ -933,7 +1075,21 @@ sub check_arguments {
         'o|output=s'     => \$output_file,
         'p|print'        => \$print_full_output,
         'w|warnings_off' => \$supress_error_output,
+        'H|helptext'     => \$print_helptext,
+        'x|xml'          => \$xml_helptext,
+        'header=s'       => \$header_file,
+        'footer=s'       => \$footer_file,
+        'flags=s'        => \$flags_file,
     );
+
+    if ($xml_helptext) {
+        $print_helptext = 1;
+    }
+
+    if ($print_helptext) {
+        $supress_error_output = 1;
+    }
+
 }
 
 #-------------------------------------------------------------------------------
@@ -945,6 +1101,11 @@ sub usage {
     print " -o|--output=file    set output filename\n";
     print " -p|--print          Print full output\n";
     print " -w|--warnings_off   Don't print warnings\n";
+    print " -H|--helptext       Print helptext (implies -w)\n";
+    print " -x|--xml            Print helptext in xml format(implies -H -w)\n";
+    print "    --header=file    Prepend the output with a file\n";
+    print "    --footer=file    Append a file to the output\n";
+    print "    --flags=file     Load flags for symbols for helptext formatting\n";
 
     exit(0);
 }
