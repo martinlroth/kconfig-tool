@@ -883,10 +883,29 @@ sub load_kconfig_file {
 
     my $i = 0;
     while ( my $line = shift @file_data ) {
-        $dir_file_data[$i]{text}         = $line;
+
+        #handle line continuation.
+        my $j = 0;
+        while ($line =~ /(.*)\s+\\$/) {
+            $dir_file_data[$i]{text} .= $1;
+            $line = shift @file_data;
+            $j++;
+
+            #put the data into the continued lines (other than the first)
+            $line =~ /^\s*(.*)\s*$/;
+            $dir_file_data[$i + $j]{text} = "#continued line ( " . $1 . " )\n";
+            $dir_file_data[$i+ $j]{filename}     = $input_file;
+            $dir_file_data[$i+ $j]{file_line_no} = $i + $j + 1;
+        }
+
+        $dir_file_data[$i]{text}         .= $line;
         $dir_file_data[$i]{filename}     = $input_file;
         $dir_file_data[$i]{file_line_no} = $i + 1;
+
         $i++;
+        if ($j) {
+            $i += $j
+        }
     }
 
     return @dir_file_data;
