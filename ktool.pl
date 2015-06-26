@@ -29,7 +29,6 @@ use Getopt::Long;
 use Getopt::Std;
 
 my $supress_error_output = 0;      # flag to prevent warning and error text
-my $debug_ktool          = 0;      # flag to print additional ktool debug output
 my $print_full_output    = 0;      # flag to print wholeconfig output
 my $output_file          = "-";    # filename of output - set stdout by default
 
@@ -203,9 +202,6 @@ sub build_and_parse_kconfig_tree {
 
         #look for basic issues in the line, strip crlf
         $line = simple_line_checks( $line, $filename, $line_no );
-
-        #print for debugging
-        if ($debug_ktool) { print "$line  ($filename line $line_no )\n"; }
 
         #strip comments
         $line =~ s/\s*#.*$//;
@@ -386,7 +382,6 @@ sub build_and_parse_kconfig_tree {
 
         # source <prompt>
         elsif ( $line =~ /^\s*source\s+"?([^"\s]+)"?\s*(?>#.*)?$/ ) {
-            if ($debug_ktool) { print "##### KTOOL EVALUATED '$line'\n"; }
             my @newfile = load_kconfig_file( $1, $filename, $line_no, 0 );
             unshift( @config_to_parse, @newfile );
             $parseline[0]{text} = "##### KTOOL EVALUATED '$line' #####\n";
@@ -839,7 +834,6 @@ sub load_kconfig_file {
         my $dir_prefix = $1;
         my $dir_suffix = $2;
         if ( -d "$dir_prefix" ) {
-            if ($debug_ktool) { print "##### KTOOL EXPANDED '$input_file'\n"; }
 
             opendir( D, "$dir_prefix" ) || die "Can't open directory '$dir_prefix'\n";
             my @dirlist = sort { $a cmp $b } readdir(D);
@@ -861,7 +855,6 @@ sub load_kconfig_file {
         }
     }
     elsif ( -e "$input_file" ) {
-        if ($debug_ktool) { print "##### KTOOL LOADED '$input_file'\n"; }
         if ( exists $loaded_files{$input_file} ) {
             unless ($supress_error_output) {
                 print "#!!!!! Warning: '$input_file' sourced in '$loadfile' at line $loadline was already loaded by $loaded_files{$input_file}\n";
@@ -947,7 +940,6 @@ sub check_if_file_referenced {
 sub check_arguments {
     my $show_usage = 0;
     GetOptions(
-        'D|debug'        => \$debug_ktool,
         'help|?'         => sub { usage() },
         'o|output=s'     => \$output_file,
         'p|print'        => \$print_full_output,
@@ -960,7 +952,6 @@ sub check_arguments {
 #-------------------------------------------------------------------------------
 sub usage {
     print "Ktool <options>\n";
-    print " -D|--debug          Debug enabled\n";
     print " -o|--output=file    set output filename\n";
     print " -p|--print          Print full output\n";
     print " -w|--warnings_off   Don't print warnings\n";
