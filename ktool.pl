@@ -182,7 +182,7 @@ sub check_used_symbols {
 #-------------------------------------------------------------------------------
 #load the initial file and start parsing it
 sub build_and_parse_kconfig_tree {
-    my @config_to_parse = load_kconfig_file( "$root_dir/Kconfig", "", 0, 0 );
+    my @config_to_parse = load_kconfig_file( "$root_dir/Kconfig", "", 0, 0, "", 0 );
     my @parseline;
     my $inside_help   = 0;     # set to line number of 'help' keyword if this line is inside a help block
     my @inside_if     = ();    # stack of if dependencies
@@ -382,9 +382,9 @@ sub build_and_parse_kconfig_tree {
 
         # source <prompt>
         elsif ( $line =~ /^\s*source\s+"?([^"\s]+)"?\s*(?>#.*)?$/ ) {
-            my @newfile = load_kconfig_file( $1, $filename, $line_no, 0 );
+            my @newfile = load_kconfig_file( $1, $filename, $line_no, 0, $filename, $line_no );
             unshift( @config_to_parse, @newfile );
-            $parseline[0]{text} = "##### KTOOL EVALUATED '$line' #####\n";
+            $parseline[0]{text} = "# '$line'\n";
         }
         elsif (
             ( $line =~ /^\s*#/ ) ||    #comments
@@ -825,7 +825,7 @@ sub simple_line_checks {
 # load_kconfig_file - Loads a single Kconfig file or expands * wildcard
 #-------------------------------------------------------------------------------
 sub load_kconfig_file {
-    my ( $input_file, $loadfile, $loadline, $expanded ) = @_;
+    my ( $input_file, $loadfile, $loadline, $expanded, $topfile, $topline ) = @_;
     my @file_data;
     my @dir_file_data;
 
@@ -843,7 +843,7 @@ sub load_kconfig_file {
 
                 #ignore non-directory files
                 if ( ( -d "$dir_prefix/$directory" ) && !( $directory =~ /^\..*/ ) ) {
-                    push @dir_file_data, load_kconfig_file( "$dir_prefix/$directory/$dir_suffix", $input_file, $loadline, 1 );
+                    push @dir_file_data, load_kconfig_file( "$dir_prefix/$directory/$dir_suffix", $input_file, $loadline, 1, $loadfile, $loadline );
                 }
             }
         }
@@ -899,6 +899,14 @@ sub load_kconfig_file {
         if ($j) {
             $i += $j
         }
+    }
+
+    if ($topfile) {
+        my %file_data;
+        $file_data{text}         = "\t### File '$input_file' loaded from '$topfile' line $topline\n" ;
+        $file_data{filename}     = $topfile;
+        $file_data{file_line_no} = "($topline)";
+        unshift (@dir_file_data, \%file_data);
     }
 
     return @dir_file_data;
