@@ -31,14 +31,19 @@ use Getopt::Std;
 my $supress_error_output = 0;      # flag to prevent warning and error text
 my $print_full_output    = 0;      # flag to print wholeconfig output
 my $output_file          = "-";    # filename of output - set stdout by default
+my $dont_use_git_grep    = 0;
 
 #globals
 my $root_dir     = "src";
 my $errors_found = 0;              # count of warnings and errors
+my $exclude_dirs  = '--exclude-dir="build" --exclude-dir="coreboot-builds" --exclude-dir="payloads" --exclude-dir="configs"';  # directories to exclude when searching for used symbols
+my @exclude_files = ('\.txt$', '\.tex$', 'config', '\.tags'); #files to exclude when looking for symbols
+my $config_file   = "";            # name of config file to load symbol values from.
 my @wholeconfig;                   # document the entire kconfig structure
 my %loaded_files;                  # list of each Kconfig file loaded
 my %symbols;                       # main structure of all symbols declared
 my %referenced_symbols;            # list of symbols referenced by expressions or select statements
+my %used_symbols;                  # structure of symbols used in the tree, and where they're found
 
 Main();
 
@@ -61,6 +66,8 @@ sub Main {
     find( \&check_if_file_referenced, $root_dir );
     check_defaults();
     check_referenced_symbols();
+
+    collect_used_symbols();
     check_used_symbols();
 
     print_wholeconfig();
@@ -139,23 +146,47 @@ sub check_referenced_symbols {
 }
 
 #-------------------------------------------------------------------------------
-# check_used_symbols - Checks to see whether or not the created symbols are
-# actually used.
 #-------------------------------------------------------------------------------
-sub check_used_symbols {
-
+sub collect_used_symbols {
     # find all references to CONFIG_ statements in the tree
-    my @used_symbols = `grep -shr --exclude-dir="build" -- "CONFIG_"`;
-    my %used_symbols;
+    my @used_symbols;
+    if ($dont_use_git_grep) {
+        @used_symbols = `grep -Ir $exclude_dirs -- "CONFIG_"`;
+    } else {
+        @used_symbols = `git grep -I -- "CONFIG_"`;
+    }
 
     #sort through symbols found by grep and store them in a hash for easy access
     while ( my $line = shift @used_symbols ) {
         while ( $line =~ /[^A-Za-z0-9_]CONFIG_([A-Za-z0-9_]+)/g ) {
-            my $conf = $1;
-            $used_symbols{$conf} = 1;
-        }
-    }
+            my $symbol = $1;
+            my $filename = "";
+            if ($line =~ /^([^:]+):/) {
+                $filename = $1;
+            }
 
+            my $skip = 0;
+            foreach my $exfile ( @exclude_files)  {
+                $skip = ($filename =~ /$exfile/);
+                last if $skip;
+            }
+            last if $skip;
+
+            if (exists $used_symbols{$symbol}{count}) {
+                $used_symbols{$symbol}{count}++;
+            } else {
+                 $used_symbols{$symbol}{count} = 0;
+            }
+            $used_symbols{$symbol}{"num_$used_symbols{$symbol}{count}"} = $filename;
+         }
+    }
+}
+
+#-------------------------------------------------------------------------------
+# check_used_symbols - Checks to see whether or not the created symbols are
+# actually used.
+#-------------------------------------------------------------------------------
+sub check_used_symbols {
     # loop through all defined symbols and see if they're used anywhere
     foreach my $key ( sort ( keys %symbols ) ) {
 
@@ -952,6 +983,7 @@ sub check_arguments {
         'o|output=s'     => \$output_file,
         'p|print'        => \$print_full_output,
         'w|warnings_off' => \$supress_error_output,
+        'G|no_git_grep'  => \$dont_use_git_grep,
     );
 }
 
@@ -963,6 +995,7 @@ sub usage {
     print " -o|--output=file    set output filename\n";
     print " -p|--print          Print full output\n";
     print " -w|--warnings_off   Don't print warnings\n";
+    print " -G|--no_git_grep    Use standard grep tools instead of git grep\n";
 
     exit(0);
 }
